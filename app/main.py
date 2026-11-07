@@ -14,11 +14,10 @@ from kivy.storage.jsonstore import JsonStore
 from kivy.utils import platform
 from plyer import gps
 
-FIELDS = ['host', 'port', 'topic', 'user', 'password']
 DEFAULTS = {
-    'host': 'broker.hivemq.com',
-    'port': '1883',
-    'topic': f'phone-gps/{uuid.uuid4().hex[:8]}',  # random, so nobody else uses the same topic
+    'host': '',
+    'port': '8883',
+    'topic': 'phone-gps',
     'user': '',
     'password': '',
 }
@@ -94,45 +93,25 @@ class GpsMqttApp(App):
 
     def build(self):
         root = Builder.load_string(KV)
-        # Restore the settings from the last run
         self.store = JsonStore(os.path.join(self.user_data_dir, 'settings.json'))
-        settings = self.store.get('settings') if self.store.exists('settings') else DEFAULTS
-        for key in FIELDS:
-            root.ids[key].text = settings.get(key, DEFAULTS[key])
+        saved = self.store.get('settings') if self.store.exists('settings') else {}
+        for key, default in DEFAULTS.items():
+            root.ids[key].text = saved.get(key, default)
         return root
 
     def on_start(self):
         if platform == 'android':
             gps.configure(on_location=self.on_location, on_status=self.on_provider_status)
 
-    # ---------- Start / Stop ----------
-
     def start_sending(self):
-        settings = {key: self.root.ids[key].text.strip() for key in FIELDS}
+        settings = {key: self.root.ids[key].text.strip() for key in DEFAULTS}
+        if not settings['host'] or not settings['port']:
+            self.mqtt_status = 'MQTT: enter host and port first'
+            return
         self.store.put('settings', **settings)
         self.topic = settings['topic']
-
-        # MQTT: connect in the background, paho reconnects automatically
-        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-        self.client.on_connect = self.on_connect
-        self.client.on_disconnect = self.on_disconnect
-        if settings['user']:
-            self.client.username_pw_set(settings['user'], settings['password'])
-        if settings['port'] == '8883':  # TLS port, e.g. HiveMQ Cloud
-            self.client.tls_set(ca_certs=certifi.where())
-        self.client.connect_async(settings['host'], int(settings['port']))
-        self.client.loop_start()
-
-        # GPS: ask for permission first, the GPS starts in on_permissions
-        if platform == 'android':
-            from android.permissions import Permission, request_permissions
-            request_permissions(
-                [Permission.ACCESS_FINE_LOCATION, Permission.ACCESS_COARSE_LOCATION],
-                self.on_permissions,
-            )
-        else:
-            self.gps_status = 'GPS: only available on Android'
-
+        self.connect_mqtt(settings)
+        self.start_gps()
         self.running = True
 
     def stop_sending(self):
@@ -143,19 +122,36 @@ class GpsMqttApp(App):
         self.gps_status = 'GPS: stopped'
         self.running = False
 
-    # ---------- Callbacks (called from Android / paho threads) ----------
+    def connect_mqtt(self, settings):
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        self.client.username_pw_set(settings['user'], settings['password'])
+        self.client.tls_set(ca_certs=certifi.where())
+        self.client.on_connect = self.on_connect
+        self.client.on_disconnect = self.on_disconnect
+        self.client.connect_async(settings['host'], int(settings['port']))
+        self.client.loop_start()
+        self.mqtt_status = 'MQTT: connecting...'
+
+    def start_gps(self):
+        if platform != 'android':
+            self.gps_status = 'GPS: only available on Android'
+            return
+        from android.permissions import Permission, request_permissions
+        request_permissions(
+            [Permission.ACCESS_FINE_LOCATION, Permission.ACCESS_COARSE_LOCATION],
+            self.on_permissions,
+        )
 
     @mainthread
     def on_permissions(self, permissions, grants):
         if all(grants):
-            gps.start(minTime=1000, minDistance=0)  # one fix per second at most
+            gps.start(minTime=1000, minDistance=0)
             self.gps_status = 'GPS: waiting for fix...'
         else:
             self.gps_status = 'GPS: permission denied (allow precise location)'
 
-    def on_location(self, **kwargs):
-        # kwargs: lat, lon, altitude, speed, bearing, accuracy
-        fix = {'time': time.time(), **kwargs}
+    def on_location(self, **location):
+        fix = {'time': time.time(), **location}
         self.client.publish(self.topic, json.dumps(fix))
         self.show_fix(fix)
 
