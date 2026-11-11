@@ -1,28 +1,37 @@
-# Phone GPS → MQTT
+# Phone sensors → MQTT
 
-Android app (Kivy + Plyer + paho-mqtt, built with Buildozer) that publishes the phone's GPS fixes to a private MQTT broker (EMQX Cloud Serverless, free). A PC script receives them and logs them to CSV, e.g. as input for a Kalman filter simulation.
+Android app (Kivy + Plyer + paho-mqtt, built with Buildozer) that publishes the phone's GPS fixes and sensor readings to a private MQTT broker (EMQX Cloud Serverless, free). A PC script receives them and logs them to CSV, e.g. as input for a Kalman filter simulation.
 
 ```
 app/   Android app (main.py, buildozer.spec)
-pc/    subscriber.py: receive, print, log to CSV
+pc/    subscriber.py: receive, print, log to one CSV per sensor
 ```
 
-## Message format
+## Sensors and messages
 
-One JSON message per fix (at most 1 per second), QoS 0, on the topic set in the app (default `phone-gps/<random id>`):
+The app has one row per sensor: a checkbox to publish it and the topic it is published on (default `phone/<sensor>`). Sensors with the same topic share that topic.
+
+| Sensor          | Fields                                         | Unit                                |
+|-----------------|------------------------------------------------|-------------------------------------|
+| `gps`           | `lat, lon, altitude, speed, bearing, accuracy` | degrees (WGS84), m, m/s, degrees, m |
+| `accelerometer` | `x, y, z`                                      | m/s², includes gravity              |
+| `gyroscope`     | `x, y, z`                                      | rad/s                               |
+| `compass`       | `x, y, z`                                      | µT (magnetic field)                 |
+| `barometer`     | `pressure`                                     | hPa                                 |
+| `gravity`       | `x, y, z`                                      | m/s²                                |
+| `orientation`   | `yaw, pitch, roll`                             | rad                                 |
+
+Each reading is one JSON message (QoS 0) with the sensor's name, the phone's clock in Unix seconds and the fields above:
 
 ```json
-{"time": 1794049269.79, "lat": 52.0, "lon": 7.6, "altitude": 60.0, "speed": 1.2, "bearing": 90.0, "accuracy": 4.5}
+{"sensor": "gps", "time": 1794049269.79, "lat": 52.0, "lon": 7.6, "altitude": 60.0, "speed": 1.2, "bearing": 90.0, "accuracy": 4.5}
+{"sensor": "accelerometer", "time": 1794049269.81, "x": 0.1, "y": 0.2, "z": 9.8}
 ```
 
-| Field      | Unit                                                              |
-|------------|-------------------------------------------------------------------|
-| `time`     | Unix time in s (phone clock when the fix arrived)                 |
-| `lat, lon` | degrees (WGS84)                                                   |
-| `altitude` | m                                                                 |
-| `speed`    | m/s                                                               |
-| `bearing`  | degrees                                                           |
-| `accuracy` | m, 68 % radius; usable as measurement noise in the Kalman filter  |
+- GPS fixes arrive at most once per second, all other sensors 5 times per second (the rate Plyer reads them at).
+- All GPS fields come from the location fix: `speed` and `bearing` are computed by the GNSS chip, not by a separate sensor. `accuracy` is the 68 % radius, usable as measurement noise in the Kalman filter.
+- `x, y, z` are in the phone's frame: x to the right, y up, z out of the screen.
+- `gravity` and `orientation` are not sensors of their own: Android computes them from the accelerometer, gyroscope and compass.
 
 ## Build and install the app
 
@@ -73,19 +82,22 @@ App and PC talk through a private MQTT broker. EMQX gives 1GB free data-transfer
 
 ## Use
 
-1. In the app, enter Host = address, User and Password (Port stays `8883`), press **Start** and allow *precise* location.
-2. On the PC, subscribe with the same address, user and the topic shown in the app. The password is prompted, so it stays out of your shell history:
+1. In the app, enter Host = address, User and Password (Port stays `8883`), tick the sensors you want, press **Start** and allow *precise* location.
+2. On the PC, subscribe with the same address and user to one or more topics. The password is prompted, so it stays out of your shell history:
 
 ```bash
 cd pc
 pip install -r requirements.txt
-python subscriber.py <topic> --host <address> --user <user>                   # appends to gps_log.csv
-python subscriber.py <topic> --host <address> --user <user> --csv walk1.csv
+python subscriber.py phone/gps --host <address> --user <user>                      # one sensor
+python subscriber.py phone/gps phone/gyroscope --host <address> --user <user>      # a combination
+python subscriber.py 'phone/#' --host <address> --user <user> --out walk1          # all, into walk1/
 ```
 
+Readings are appended to `<sensor>.csv` in the output folder (default `log/`). Every file has a `time` column to align the sensors.
 
 ## Notes
 
 - Keep the app open in the foreground (the screen stays on). Android throttles location updates for apps in the background.
 - Plyer listens to all location providers (GPS, network, ...), so some fixes can be coarse network positions. Filter them by `accuracy` or use `accuracy` as measurement noise.
-
+- A sensor the phone doesn't have (often the barometer) simply publishes nothing.
+- With all sensors ticked the app sends about 30 messages per second, roughly 10 MB per hour of the free 1 GB.
