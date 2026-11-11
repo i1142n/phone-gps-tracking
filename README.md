@@ -16,22 +16,16 @@ The app has one row per sensor: a checkbox to publish it and the topic it is pub
 | `gps`           | `lat, lon, altitude, speed, bearing, accuracy` | degrees (WGS84), m, m/s, degrees, m |
 | `accelerometer` | `x, y, z`                                      | m/s², includes gravity              |
 | `gyroscope`     | `x, y, z`                                      | rad/s                               |
-| `compass`       | `x, y, z`                                      | µT (magnetic field)                 |
+| `compass`       | `x, y, z`                                      | µT                                  |
 | `barometer`     | `pressure`                                     | hPa                                 |
 | `gravity`       | `x, y, z`                                      | m/s²                                |
 | `orientation`   | `yaw, pitch, roll`                             | rad                                 |
 
-Each reading is one JSON message (QoS 0) with the sensor's name, the phone's clock in Unix seconds and the fields above:
+Each reading is one JSON message with the sensor's name, the phone's clock in Unix seconds and the fields above. GPS fixes arrive about once per second, the other sensors 5 times per second.
 
 ```json
-{"sensor": "gps", "time": 1794049269.79, "lat": 52.0, "lon": 7.6, "altitude": 60.0, "speed": 1.2, "bearing": 90.0, "accuracy": 4.5}
 {"sensor": "accelerometer", "time": 1794049269.81, "x": 0.1, "y": 0.2, "z": 9.8}
 ```
-
-- GPS fixes arrive at most once per second, all other sensors 5 times per second (the rate Plyer reads them at).
-- All GPS fields come from the location fix: `speed` and `bearing` are computed by the GNSS chip, not by a separate sensor. `accuracy` is the 68 % radius, usable as measurement noise in the Kalman filter.
-- `x, y, z` are in the phone's frame: x to the right, y up, z out of the screen.
-- `gravity` and `orientation` are not sensors of their own: Android computes them from the accelerometer, gyroscope and compass.
 
 ## Build and install the app
 
@@ -97,7 +91,11 @@ Readings are appended to `<sensor>.csv` in the output folder (default `log/`). E
 
 ## Notes
 
-- Keep the app open in the foreground (the screen stays on). Android throttles location updates for apps in the background.
-- Plyer listens to all location providers (GPS, network, ...), so some fixes can be coarse network positions. Filter them by `accuracy` or use `accuracy` as measurement noise.
-- A sensor the phone doesn't have (often the barometer) simply publishes nothing.
-- With all sensors ticked the app sends about 30 messages per second, roughly 10 MB per hour of the free 1 GB.
+- Keep the app open in the foreground (the screen stays on); Android throttles apps in the background.
+- A sensor the phone doesn't have publishes nothing.
+
+## Working on the code
+
+- `app/main.py`: `SENSORS` lists the Plyer sensors and their fields, `KV` is the screen. Rebuild and reinstall after a change (steps 3 and 4).
+- `pc/subscriber.py` takes the CSV columns from the messages, so it needs no change for a new sensor.
+- Changes are logged in `CHANGES.md`.
